@@ -17,3 +17,9 @@ docker-run:
 
 run:
 	DEBUG=true go run main.go
+
+local-check:
+	@echo
+	go mod tidy
+	@echo
+	go mod verify

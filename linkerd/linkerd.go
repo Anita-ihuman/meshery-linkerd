@@ -36,8 +36,6 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
-// logrus.Debugf("received k8sConfig: %s", k8sConfig)  //to solve
-
 // CreateMeshInstance - creates a mesh adapter instance
 func (iClient *Client) CreateMeshInstance(_ context.Context, k8sReq *meshes.CreateMeshInstanceRequest) (*meshes.CreateMeshInstanceResponse, error) {
 	var k8sConfig []byte
@@ -288,36 +286,19 @@ func (iClient *Client) labelNamespaceForAutoInjection(ctx context.Context, names
 
 func (iClient *Client) executeInstall(ctx context.Context, arReq *meshes.ApplyRuleRequest) error {
 	var tmpKubeConfigFileLoc = path.Join(os.TempDir(), fmt.Sprintf("kubeconfig_%d", time.Now().UnixNano()))
-	// -L <namespace> --context <context name> --kubeconfig <file path>
-	// logrus.Debugf("about to write kubeconfig to file: %s", iClient.kubeconfig)
 	if err := ioutil.WriteFile(tmpKubeConfigFileLoc, iClient.kubeconfig, 0600); err != nil {
 		return err
 	}
-	// defer os.Remove(tmpKubeConfigFileLoc)
 
-	args1 := []string{"--linkerd-namespace", arReq.Namespace}
-	if iClient.contextName != "" {
-		args1 = append(args1, "--context", iClient.contextName)
-	}
-	args1 = append(args1, "--kubeconfig", tmpKubeConfigFileLoc)
-
-	preCheck := append(args1, "check", "--pre")
-	_, _, err := iClient.execute(preCheck...)
+	// Need to confirm Linkerd2 has been already install into the cluster succeed.
+	installManifest, err := iClient.preCheck(arReq.Namespace)
 	if err != nil {
 		return err
 	}
+	logrus.Debug(installManifest)
 
-	installArgs := append(args1, "install", "--ignore-cluster")
-	yamlFileContents, er, err := iClient.execute(installArgs...)
-	if err != nil {
-		return err
-	}
-	if er != "" {
-		err = fmt.Errorf("received error while attempting to prepare install yaml: %s", er)
-		logrus.Error(err)
-		return err
-	}
-	if err := iClient.applyConfigChange(ctx, yamlFileContents, arReq.Namespace, arReq.DeleteOp); err != nil {
+	err=iClient.deployment(installManifest)
+	if err!=nil{
 		return err
 	}
 	return nil
@@ -504,28 +485,12 @@ func (iClient *Client) ApplyOperation(ctx context.Context, arReq *meshes.ApplyRu
 			OperationId: arReq.OperationId,
 		}, nil
 	default:
-		// tmpl, err := template.ParseFiles(path.Join("linkerd", "config_templates", op.templateName))
-		// if err != nil {
-		// 	err = errors.Wrapf(err, "unable to parse template")
-		// 	logrus.Error(err)
-		// 	return nil, err
-		// }
-		// buf := bytes.NewBufferString("")
-		// err = tmpl.Execute(buf, map[string]string{
-		// 	"user_name": arReq.Username,
-		// 	"namespace": arReq.Namespace,
-		// })
-		// if err != nil {
-		// 	err = errors.Wrapf(err, "unable to execute template")
-		// 	logrus.Error(err)
-		// 	return nil, err
-		// }
-		// yamlFileContents = buf.String()
 		err := fmt.Errorf("please select a valid operation")
 		logrus.Error(err)
 		return nil, err
 	}
 
+	// Apply change
 	if err := iClient.applyConfigChange(ctx, yamlFileContents, arReq.Namespace, arReq.DeleteOp); err != nil {
 		return nil, err
 	}
@@ -536,7 +501,6 @@ func (iClient *Client) ApplyOperation(ctx context.Context, arReq *meshes.ApplyRu
 }
 
 func (iClient *Client) applyConfigChange(ctx context.Context, yamlFileContents, namespace string, delete bool) error {
-	// yamls := strings.Split(yamlFileContents, "---")
 	yamls, err := iClient.splitYAML(yamlFileContents)
 	if err != nil {
 		err = errors.Wrap(err, "error while splitting yaml")
@@ -544,18 +508,14 @@ func (iClient *Client) applyConfigChange(ctx context.Context, yamlFileContents, 
 		return err
 	}
 	for _, yml := range yamls {
-		// if strings.TrimSpace(yml) != "" {
 		if err := iClient.applyRulePayload(ctx, namespace, []byte(yml), delete); err != nil {
 			errStr := strings.TrimSpace(err.Error())
 			if delete && (strings.HasSuffix(errStr, "not found") ||
 				strings.HasSuffix(errStr, "the server could not find the requested resource")) {
-				// logrus.Debugf("skipping error. . .")
 				continue
 			}
-			// logrus.Debugf("returning error: %v", err)
 			return err
 		}
-		// }
 	}
 	return nil
 }
